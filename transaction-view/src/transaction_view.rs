@@ -169,7 +169,9 @@ impl<const SANITIZED: bool, D: TransactionData> TransactionView<SANITIZED, D> {
 // Implementation that relies on sanitization checks having been run.
 impl<D: TransactionData> TransactionView<true, D> {
     /// Return an iterator over the instructions paired with their program ids.
-    pub fn program_instructions_iter(&self) -> impl Iterator<Item = (&Pubkey, SVMInstruction)> {
+    pub fn program_instructions_iter(
+        &self,
+    ) -> impl Iterator<Item = (&Pubkey, SVMInstruction)> + Clone {
         self.instructions_iter().map(|ix| {
             let program_id_index = usize::from(ix.program_id_index);
             let program_id = &self.static_account_keys()[program_id_index];
@@ -196,6 +198,14 @@ impl<D: TransactionData> TransactionView<true, D> {
     pub(crate) fn num_writable_signed_static_accounts(&self) -> u8 {
         self.num_required_signatures()
             .wrapping_sub(self.num_readonly_signed_static_accounts())
+    }
+
+    /// Return the total number of accounts in the transactions.
+    #[inline]
+    pub fn total_num_accounts(&self) -> u16 {
+        u16::from(self.num_static_account_keys())
+            .wrapping_add(self.total_writable_lookup_accounts())
+            .wrapping_add(self.total_readonly_lookup_accounts())
     }
 }
 

@@ -108,7 +108,7 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         time::Duration,
     },
@@ -121,6 +121,7 @@ use {
     solana_runtime::commitment::CommitmentSlots,
     solana_send_transaction_service::{
         send_transaction_service::SendTransactionService, tpu_info::NullTpuInfo,
+        transaction_client::ConnectionCacheClient,
     },
     solana_streamer::socket::SocketAddrSpace,
 };
@@ -213,7 +214,7 @@ pub struct JsonRpcRequestProcessor {
     health: Arc<RpcHealth>,
     cluster_info: Arc<ClusterInfo>,
     genesis_hash: Hash,
-    transaction_sender: Arc<Mutex<Sender<TransactionInfo>>>,
+    transaction_sender: Sender<TransactionInfo>,
     bigtable_ledger_storage: Option<solana_storage_bigtable::LedgerStorage>,
     optimistically_confirmed_bank: Arc<RwLock<OptimisticallyConfirmedBank>>,
     largest_accounts_cache: Arc<RwLock<LargestAccountsCache>>,
@@ -329,7 +330,7 @@ impl JsonRpcRequestProcessor {
         max_complete_rewards_slot: Arc<AtomicU64>,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
     ) -> (Self, Receiver<TransactionInfo>) {
-        let (sender, receiver) = unbounded();
+        let (transaction_sender, transaction_receiver) = unbounded();
         (
             Self {
                 config,
@@ -341,7 +342,7 @@ impl JsonRpcRequestProcessor {
                 health,
                 cluster_info,
                 genesis_hash,
-                transaction_sender: Arc::new(Mutex::new(sender)),
+                transaction_sender,
                 bigtable_ledger_storage,
                 optimistically_confirmed_bank,
                 largest_accounts_cache,
@@ -351,7 +352,7 @@ impl JsonRpcRequestProcessor {
                 max_complete_rewards_slot,
                 prioritization_fee_cache,
             },
-            receiver,
+            transaction_receiver,
         )
     }
 
@@ -378,15 +379,20 @@ impl JsonRpcRequestProcessor {
             .my_contact_info()
             .tpu(connection_cache.protocol())
             .unwrap();
-        let (sender, receiver) = unbounded();
-        SendTransactionService::new::<NullTpuInfo>(
+        let (transaction_sender, transaction_receiver) = unbounded();
+
+        let client = ConnectionCacheClient::<NullTpuInfo>::new(
+            connection_cache.clone(),
             tpu_address,
-            &bank_forks,
             None,
-            receiver,
-            connection_cache,
-            1000,
+            None,
             1,
+        );
+        SendTransactionService::new(
+            &bank_forks,
+            transaction_receiver,
+            client,
+            1000,
             exit.clone(),
         );
 
@@ -415,7 +421,7 @@ impl JsonRpcRequestProcessor {
             )),
             cluster_info,
             genesis_hash,
-            transaction_sender: Arc::new(Mutex::new(sender)),
+            transaction_sender,
             bigtable_ledger_storage: None,
             optimistically_confirmed_bank,
             largest_accounts_cache: Arc::new(RwLock::new(LargestAccountsCache::new(30))),
@@ -1689,118 +1695,118 @@ impl JsonRpcRequestProcessor {
         let commitment = config.commitment.unwrap_or_default();
         check_is_at_least_confirmed(commitment)?;
 
-        if self.config.enable_rpc_transaction_history {
-            let highest_super_majority_root = self
-                .block_commitment_cache
-                .read()
-                .unwrap()
-                .highest_super_majority_root();
-            let highest_slot = if commitment.is_confirmed() {
-                let confirmed_bank = self.get_bank_with_config(config)?;
-                confirmed_bank.slot()
-            } else {
-                let min_context_slot = config.min_context_slot.unwrap_or_default();
-                if highest_super_majority_root < min_context_slot {
-                    return Err(RpcCustomError::MinContextSlotNotReached {
-                        context_slot: highest_super_majority_root,
-                    }
-                    .into());
+        if !self.config.enable_rpc_transaction_history {
+            return Err(RpcCustomError::TransactionHistoryNotAvailable.into());
+        }
+
+        let highest_super_majority_root = self
+            .block_commitment_cache
+            .read()
+            .unwrap()
+            .highest_super_majority_root();
+        let highest_slot = if commitment.is_confirmed() {
+            let confirmed_bank = self.get_bank_with_config(config)?;
+            confirmed_bank.slot()
+        } else {
+            let min_context_slot = config.min_context_slot.unwrap_or_default();
+            if highest_super_majority_root < min_context_slot {
+                return Err(RpcCustomError::MinContextSlotNotReached {
+                    context_slot: highest_super_majority_root,
                 }
-                highest_super_majority_root
-            };
+                .into());
+            }
+            highest_super_majority_root
+        };
 
-            let SignatureInfosForAddress {
-                infos: mut results,
-                found_before,
-            } = self
-                .blockstore
-                .get_confirmed_signatures_for_address2(address, highest_slot, before, until, limit)
-                .map_err(|err| Error::invalid_params(format!("{err}")))?;
+        let SignatureInfosForAddress {
+            infos: mut results,
+            found_before,
+        } = self
+            .blockstore
+            .get_confirmed_signatures_for_address2(address, highest_slot, before, until, limit)
+            .map_err(|err| Error::invalid_params(format!("{err}")))?;
 
-            let map_results = |results: Vec<ConfirmedTransactionStatusWithSignature>| {
-                results
-                    .into_iter()
-                    .map(|x| {
-                        let mut item: RpcConfirmedTransactionStatusWithSignature = x.into();
-                        if item.slot <= highest_super_majority_root {
-                            item.confirmation_status =
-                                Some(TransactionConfirmationStatus::Finalized);
-                        } else {
-                            item.confirmation_status =
-                                Some(TransactionConfirmationStatus::Confirmed);
-                            if item.block_time.is_none() {
-                                let r_bank_forks = self.bank_forks.read().unwrap();
-                                item.block_time = r_bank_forks
-                                    .get(item.slot)
-                                    .map(|bank| bank.clock().unix_timestamp);
-                            }
-                        }
-                        item
-                    })
-                    .collect()
-            };
-
-            if results.len() < limit {
-                if let Some(bigtable_ledger_storage) = &self.bigtable_ledger_storage {
-                    let mut bigtable_before = before;
-                    if !results.is_empty() {
-                        limit -= results.len();
-                        bigtable_before = results.last().map(|x| x.signature);
-                    }
-
-                    // If the oldest address-signature found in Blockstore has not yet been
-                    // uploaded to long-term storage, modify the storage query to return all latest
-                    // signatures to prevent erroring on RowNotFound. This can race with upload.
-                    if found_before && bigtable_before.is_some() {
-                        match bigtable_ledger_storage
-                            .get_signature_status(&bigtable_before.unwrap())
-                            .await
-                        {
-                            Err(StorageError::SignatureNotFound) => {
-                                bigtable_before = None;
-                            }
-                            Err(err) => {
-                                warn!("{:?}", err);
-                                return Ok(map_results(results));
-                            }
-                            Ok(_) => {}
+        let map_results = |results: Vec<ConfirmedTransactionStatusWithSignature>| {
+            results
+                .into_iter()
+                .map(|x| {
+                    let mut item: RpcConfirmedTransactionStatusWithSignature = x.into();
+                    if item.slot <= highest_super_majority_root {
+                        item.confirmation_status = Some(TransactionConfirmationStatus::Finalized);
+                    } else {
+                        item.confirmation_status = Some(TransactionConfirmationStatus::Confirmed);
+                        if item.block_time.is_none() {
+                            let r_bank_forks = self.bank_forks.read().unwrap();
+                            item.block_time = r_bank_forks
+                                .get(item.slot)
+                                .map(|bank| bank.clock().unix_timestamp);
                         }
                     }
+                    item
+                })
+                .collect()
+        };
 
-                    let bigtable_results = bigtable_ledger_storage
-                        .get_confirmed_signatures_for_address(
-                            &address,
-                            bigtable_before.as_ref(),
-                            until.as_ref(),
-                            limit,
-                        )
-                        .await;
-                    match bigtable_results {
-                        Ok(bigtable_results) => {
-                            let results_set: HashSet<_> =
-                                results.iter().map(|result| result.signature).collect();
-                            for (bigtable_result, _) in bigtable_results {
-                                // In the upload race condition, latest address-signatures in
-                                // long-term storage may include original `before` signature...
-                                if before != Some(bigtable_result.signature)
-                                    // ...or earlier Blockstore signatures
-                                    && !results_set.contains(&bigtable_result.signature)
-                                {
-                                    results.push(bigtable_result);
-                                }
-                            }
+        if results.len() < limit {
+            if let Some(bigtable_ledger_storage) = &self.bigtable_ledger_storage {
+                let mut bigtable_before = before;
+                if !results.is_empty() {
+                    limit -= results.len();
+                    bigtable_before = results.last().map(|x| x.signature);
+                }
+
+                // If the oldest address-signature found in Blockstore has not yet been
+                // uploaded to long-term storage, modify the storage query to return all latest
+                // signatures to prevent erroring on RowNotFound. This can race with upload.
+                if found_before && bigtable_before.is_some() {
+                    match bigtable_ledger_storage
+                        .get_signature_status(&bigtable_before.unwrap())
+                        .await
+                    {
+                        Err(StorageError::SignatureNotFound) => {
+                            bigtable_before = None;
                         }
                         Err(err) => {
-                            warn!("{:?}", err);
+                            warn!("Failed to query Bigtable: {:?}", err);
+                            return Err(RpcCustomError::LongTermStorageUnreachable.into());
                         }
+                        Ok(_) => {}
+                    }
+                }
+
+                let bigtable_results = bigtable_ledger_storage
+                    .get_confirmed_signatures_for_address(
+                        &address,
+                        bigtable_before.as_ref(),
+                        until.as_ref(),
+                        limit,
+                    )
+                    .await;
+                match bigtable_results {
+                    Ok(bigtable_results) => {
+                        let results_set: HashSet<_> =
+                            results.iter().map(|result| result.signature).collect();
+                        for (bigtable_result, _) in bigtable_results {
+                            // In the upload race condition, latest address-signatures in
+                            // long-term storage may include original `before` signature...
+                            if before != Some(bigtable_result.signature)
+                                    // ...or earlier Blockstore signatures
+                                    && !results_set.contains(&bigtable_result.signature)
+                            {
+                                results.push(bigtable_result);
+                            }
+                        }
+                    }
+                    Err(StorageError::SignatureNotFound) => {}
+                    Err(err) => {
+                        warn!("Failed to query Bigtable: {:?}", err);
+                        return Err(RpcCustomError::LongTermStorageUnreachable.into());
                     }
                 }
             }
-
-            Ok(map_results(results))
-        } else {
-            Err(RpcCustomError::TransactionHistoryNotAvailable.into())
         }
+
+        Ok(map_results(results))
     }
 
     pub async fn get_first_available_block(&self) -> Slot {
@@ -2541,8 +2547,6 @@ fn _send_transaction(
         None,
     );
     meta.transaction_sender
-        .lock()
-        .unwrap()
         .send(transaction_info)
         .unwrap_or_else(|err| warn!("Failed to enqueue transaction: {}", err));
 
@@ -4386,7 +4390,9 @@ pub mod tests {
             },
             vote::state::VoteState,
         },
-        solana_send_transaction_service::tpu_info::NullTpuInfo,
+        solana_send_transaction_service::{
+            tpu_info::NullTpuInfo, transaction_client::ConnectionCacheClient,
+        },
         solana_transaction_status::{
             EncodedConfirmedBlock, EncodedTransaction, EncodedTransactionWithStatusMeta,
             TransactionDetails,
@@ -6492,16 +6498,14 @@ pub mod tests {
             Arc::new(AtomicU64::default()),
             Arc::new(PrioritizationFeeCache::default()),
         );
-        SendTransactionService::new::<NullTpuInfo>(
+        let client = ConnectionCacheClient::<NullTpuInfo>::new(
+            connection_cache.clone(),
             tpu_address,
-            &bank_forks,
             None,
-            receiver,
-            connection_cache,
-            1000,
+            None,
             1,
-            exit,
         );
+        SendTransactionService::new(&bank_forks, receiver, client, 1000, exit.clone());
 
         let mut bad_transaction = system_transaction::transfer(
             &mint_keypair,
@@ -6766,16 +6770,15 @@ pub mod tests {
             Arc::new(AtomicU64::default()),
             Arc::new(PrioritizationFeeCache::default()),
         );
-        SendTransactionService::new::<NullTpuInfo>(
+        let client = ConnectionCacheClient::<NullTpuInfo>::new(
+            connection_cache.clone(),
             tpu_address,
-            &bank_forks,
             None,
-            receiver,
-            connection_cache,
-            1000,
+            None,
             1,
-            exit,
         );
+        SendTransactionService::new(&bank_forks, receiver, client, 1000, exit.clone());
+
         assert_eq!(
             request_processor.get_block_commitment(0),
             RpcBlockCommitment {
@@ -8533,7 +8536,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx58, TransactionBinaryEncoding::Base58)
                 .unwrap_err(),
             Error::invalid_params(format!(
-                "base58 encoded solana_sdk::transaction::Transaction too large: {tx58_len} bytes (max: encoded/raw {MAX_BASE58_SIZE}/{PACKET_DATA_SIZE})",
+                "base58 encoded solana_transaction::Transaction too large: {tx58_len} bytes (max: encoded/raw {MAX_BASE58_SIZE}/{PACKET_DATA_SIZE})",
             )
         ));
 
@@ -8543,7 +8546,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx64, TransactionBinaryEncoding::Base64)
                 .unwrap_err(),
             Error::invalid_params(format!(
-                "base64 encoded solana_sdk::transaction::Transaction too large: {tx64_len} bytes (max: encoded/raw {MAX_BASE64_SIZE}/{PACKET_DATA_SIZE})",
+                "base64 encoded solana_transaction::Transaction too large: {tx64_len} bytes (max: encoded/raw {MAX_BASE64_SIZE}/{PACKET_DATA_SIZE})",
             )
         ));
 
@@ -8554,7 +8557,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx58, TransactionBinaryEncoding::Base58)
                 .unwrap_err(),
             Error::invalid_params(format!(
-                "decoded solana_sdk::transaction::Transaction too large: {too_big} bytes (max: {PACKET_DATA_SIZE} bytes)"
+                "decoded solana_transaction::Transaction too large: {too_big} bytes (max: {PACKET_DATA_SIZE} bytes)"
             ))
         );
 
@@ -8563,7 +8566,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx64, TransactionBinaryEncoding::Base64)
                 .unwrap_err(),
             Error::invalid_params(format!(
-                "decoded solana_sdk::transaction::Transaction too large: {too_big} bytes (max: {PACKET_DATA_SIZE} bytes)"
+                "decoded solana_transaction::Transaction too large: {too_big} bytes (max: {PACKET_DATA_SIZE} bytes)"
             ))
         );
 
@@ -8573,7 +8576,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx64.clone(), TransactionBinaryEncoding::Base64)
                 .unwrap_err(),
             Error::invalid_params(
-                "failed to deserialize solana_sdk::transaction::Transaction: invalid value: \
+                "failed to deserialize solana_transaction::Transaction: invalid value: \
                 continue signal on byte-three, expected a terminal signal on or before byte-three"
                     .to_string()
             )
@@ -8591,7 +8594,7 @@ pub mod tests {
             decode_and_deserialize::<Transaction>(tx58.clone(), TransactionBinaryEncoding::Base58)
                 .unwrap_err(),
             Error::invalid_params(
-                "failed to deserialize solana_sdk::transaction::Transaction: invalid value: \
+                "failed to deserialize solana_transaction::Transaction: invalid value: \
                 continue signal on byte-three, expected a terminal signal on or before byte-three"
                     .to_string()
             )

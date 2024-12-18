@@ -23,7 +23,7 @@ use {
     },
     std::{
         hash::DefaultHasher,
-        iter::FromIterator,
+        iter::{self, FromIterator},
         str::FromStr,
         sync::{atomic::AtomicBool, RwLock},
         thread::{self, Builder, JoinHandle},
@@ -670,7 +670,7 @@ pub(crate) fn sample_storages_and_account_in_slot(
     accounts.store_for_tests(slot, &to_store[..]);
     accounts.add_root_and_flush_write_cache(slot);
 
-    let (storages, slots) = accounts.get_snapshot_storages(..=slot);
+    let (storages, slots) = accounts.get_storages(..=slot);
     assert_eq!(storages.len(), slots.len());
     storages
         .iter()
@@ -1089,14 +1089,12 @@ fn run_test_remove_unrooted_slot(is_cached: bool, db: AccountsDb) {
     } else {
         db.store_for_tests(unrooted_slot, &[(&key, &account0)]);
     }
-    assert!(db.get_bank_hash_stats(unrooted_slot).is_some());
     assert!(db.accounts_index.contains(&key));
     db.assert_load_account(unrooted_slot, key, 1);
 
     // Purge the slot
     db.remove_unrooted_slots(&[(unrooted_slot, unrooted_bank_id)]);
     assert!(db.load_without_fixed_root(&ancestors, &key).is_none());
-    assert!(db.get_bank_hash_stats(unrooted_slot).is_none());
     assert!(db.accounts_cache.slot_cache(unrooted_slot).is_none());
     assert!(db.storage.get_slot_storage_entry(unrooted_slot).is_none());
     assert!(!db.accounts_index.contains(&key));
@@ -2394,32 +2392,6 @@ fn test_hash_stored_account() {
     );
 }
 
-#[test]
-fn test_bank_hash_stats() {
-    solana_logger::setup();
-    let db = AccountsDb::new_single_for_tests();
-
-    let key = Pubkey::default();
-    let some_data_len = 5;
-    let some_slot: Slot = 0;
-    let account = AccountSharedData::new(1, some_data_len, &key);
-    let ancestors = vec![(some_slot, 0)].into_iter().collect();
-
-    db.store_for_tests(some_slot, &[(&key, &account)]);
-    let mut account = db.load_without_fixed_root(&ancestors, &key).unwrap().0;
-    account.checked_sub_lamports(1).unwrap();
-    account.set_executable(true);
-    db.store_for_tests(some_slot, &[(&key, &account)]);
-    db.add_root(some_slot);
-
-    let stats = db.get_bank_hash_stats(some_slot).unwrap();
-    assert_eq!(stats.num_updated_accounts, 1);
-    assert_eq!(stats.num_removed_accounts, 1);
-    assert_eq!(stats.num_lamports_stored, 1);
-    assert_eq!(stats.total_data_len, 2 * some_data_len as u64);
-    assert_eq!(stats.num_executable_accounts, 1);
-}
-
 // something we can get a ref to
 lazy_static! {
     pub static ref EPOCH_SCHEDULE: EpochSchedule = EpochSchedule::default();
@@ -2623,7 +2595,7 @@ fn test_storage_finder() {
 #[test]
 fn test_get_snapshot_storages_empty() {
     let db = AccountsDb::new_single_for_tests();
-    assert!(db.get_snapshot_storages(..=0).0.is_empty());
+    assert!(db.get_storages(..=0).0.is_empty());
 }
 
 #[test]
@@ -2638,10 +2610,10 @@ fn test_get_snapshot_storages_only_older_than_or_equal_to_snapshot_slot() {
 
     db.store_for_tests(base_slot, &[(&key, &account)]);
     db.add_root_and_flush_write_cache(base_slot);
-    assert!(db.get_snapshot_storages(..=before_slot).0.is_empty());
+    assert!(db.get_storages(..=before_slot).0.is_empty());
 
-    assert_eq!(1, db.get_snapshot_storages(..=base_slot).0.len());
-    assert_eq!(1, db.get_snapshot_storages(..=after_slot).0.len());
+    assert_eq!(1, db.get_storages(..=base_slot).0.len());
+    assert_eq!(1, db.get_storages(..=after_slot).0.len());
 }
 
 #[test]
@@ -2658,13 +2630,13 @@ fn test_get_snapshot_storages_only_non_empty() {
         if pass == 0 {
             db.add_root_and_flush_write_cache(base_slot);
             db.storage.remove(&base_slot, false);
-            assert!(db.get_snapshot_storages(..=after_slot).0.is_empty());
+            assert!(db.get_storages(..=after_slot).0.is_empty());
             continue;
         }
 
         db.store_for_tests(base_slot, &[(&key, &account)]);
         db.add_root_and_flush_write_cache(base_slot);
-        assert_eq!(1, db.get_snapshot_storages(..=after_slot).0.len());
+        assert_eq!(1, db.get_storages(..=after_slot).0.len());
     }
 }
 
@@ -2678,10 +2650,10 @@ fn test_get_snapshot_storages_only_roots() {
     let after_slot = base_slot + 1;
 
     db.store_for_tests(base_slot, &[(&key, &account)]);
-    assert!(db.get_snapshot_storages(..=after_slot).0.is_empty());
+    assert!(db.get_storages(..=after_slot).0.is_empty());
 
     db.add_root_and_flush_write_cache(base_slot);
-    assert_eq!(1, db.get_snapshot_storages(..=after_slot).0.len());
+    assert_eq!(1, db.get_storages(..=after_slot).0.len());
 }
 
 #[test]
@@ -2695,13 +2667,13 @@ fn test_get_snapshot_storages_exclude_empty() {
 
     db.store_for_tests(base_slot, &[(&key, &account)]);
     db.add_root_and_flush_write_cache(base_slot);
-    assert_eq!(1, db.get_snapshot_storages(..=after_slot).0.len());
+    assert_eq!(1, db.get_storages(..=after_slot).0.len());
 
     db.storage
         .get_slot_storage_entry(0)
         .unwrap()
         .remove_accounts(0, true, 1);
-    assert!(db.get_snapshot_storages(..=after_slot).0.is_empty());
+    assert!(db.get_storages(..=after_slot).0.is_empty());
 }
 
 #[test]
@@ -2714,8 +2686,8 @@ fn test_get_snapshot_storages_with_base_slot() {
     let slot = 10;
     db.store_for_tests(slot, &[(&key, &account)]);
     db.add_root_and_flush_write_cache(slot);
-    assert_eq!(0, db.get_snapshot_storages(slot + 1..=slot + 1).0.len());
-    assert_eq!(1, db.get_snapshot_storages(slot..=slot + 1).0.len());
+    assert_eq!(0, db.get_storages(slot + 1..=slot + 1).0.len());
+    assert_eq!(1, db.get_storages(slot..=slot + 1).0.len());
 }
 
 define_accounts_db_test!(
@@ -2812,7 +2784,7 @@ fn do_full_clean_refcount(mut accounts: AccountsDb, store1_first: bool, store_si
     accounts.store_for_tests(current_slot, &[(&pubkey2, &zero_lamport_account)]);
     accounts.store_for_tests(current_slot, &[(&pubkey3, &zero_lamport_account)]);
 
-    let snapshot_stores = accounts.get_snapshot_storages(..=current_slot).0;
+    let snapshot_stores = accounts.get_storages(..=current_slot).0;
     let total_accounts: usize = snapshot_stores.iter().map(|s| s.accounts_count()).sum();
     assert!(!snapshot_stores.is_empty());
     assert!(total_accounts > 0);
@@ -8068,7 +8040,7 @@ define_accounts_db_test!(test_calculate_incremental_accounts_hash, |accounts_db|
             &EpochSchedule::default(),
             OldStoragesPolicy::Leave,
         );
-        let (storages, _) = accounts_db.get_snapshot_storages(..=slot);
+        let (storages, _) = accounts_db.get_storages(..=slot);
         let storages = SortedStorages::new(&storages);
         accounts_db.calculate_accounts_hash(
             &CalcAccountsHashConfig::default(),
@@ -8139,7 +8111,7 @@ define_accounts_db_test!(test_calculate_incremental_accounts_hash, |accounts_db|
             &EpochSchedule::default(),
             OldStoragesPolicy::Leave,
         );
-        let (storages, _) = accounts_db.get_snapshot_storages(full_accounts_hash_slot + 1..=slot);
+        let (storages, _) = accounts_db.get_storages(full_accounts_hash_slot + 1..=slot);
         let storages = SortedStorages::new(&storages);
         accounts_db.calculate_incremental_accounts_hash(
             &CalcAccountsHashConfig::default(),
@@ -8173,4 +8145,116 @@ define_accounts_db_test!(test_calculate_incremental_accounts_hash, |accounts_db|
 fn compute_merkle_root(hashes: impl IntoIterator<Item = Hash>) -> Hash {
     let hashes = hashes.into_iter().collect();
     AccountsHasher::compute_merkle_root_recurse(hashes, MERKLE_FANOUT)
+}
+
+/// Test that `clean` reclaims old accounts when cleaning old storages
+///
+/// When `clean` constructs candidates from old storages, pubkeys in these storages may have other
+/// newer versions of the accounts in other newer storages *not* explicitly marked to be visited by
+/// `clean`.  In this case, `clean` should still reclaim the old versions of these accounts.
+#[test]
+fn test_clean_old_storages_with_reclaims_rooted() {
+    let accounts_db = AccountsDb::new_single_for_tests();
+    let pubkey = Pubkey::new_unique();
+    let old_slot = 11;
+    let new_slot = 22;
+    let slots = [old_slot, new_slot];
+    for &slot in &slots {
+        let account = AccountSharedData::new(slot, 0, &Pubkey::new_unique());
+        // store `pubkey` into multiple slots, and also store another unique pubkey
+        // to prevent the whole storage from being marked as dead by `clean`.
+        accounts_db.store_for_tests(
+            slot,
+            &[(&pubkey, &account), (&Pubkey::new_unique(), &account)],
+        );
+        accounts_db.add_root_and_flush_write_cache(slot);
+        // ensure this slot is *not* in the dirty_stores or uncleaned_pubkeys, because we want to
+        // test cleaning *old* storages, i.e. when they aren't explicitly marked for cleaning
+        assert!(!accounts_db.dirty_stores.contains_key(&slot));
+        assert!(!accounts_db.uncleaned_pubkeys.contains_key(&slot));
+    }
+
+    // add `old_slot` to the dirty stores list to mimic it being picked up as old
+    let old_storage = accounts_db
+        .storage
+        .get_slot_storage_entry_shrinking_in_progress_ok(old_slot)
+        .unwrap();
+    accounts_db.dirty_stores.insert(old_slot, old_storage);
+
+    // ensure the slot list for `pubkey` has both the old and new slots
+    let slot_list = accounts_db
+        .accounts_index
+        .get_bin(&pubkey)
+        .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+        .unwrap();
+    assert_eq!(slot_list.len(), slots.len());
+    assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
+
+    // `clean` should now reclaim the account in `old_slot`, even though `new_slot` is not
+    // explicitly being cleaned
+    accounts_db.clean_accounts_for_tests();
+
+    // ensure we've reclaimed the account in `old_slot`
+    let slot_list = accounts_db
+        .accounts_index
+        .get_bin(&pubkey)
+        .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+        .unwrap();
+    assert_eq!(slot_list.len(), 1);
+    assert!(slot_list
+        .iter()
+        .map(|(slot, _)| slot)
+        .eq(iter::once(&new_slot)));
+}
+
+/// Test that `clean` respects rooted vs unrooted slots w.r.t. reclaims
+///
+/// When an account is in multiple slots, and the latest is unrooted, `clean` should *not* reclaim
+/// all the rooted versions.
+#[test]
+fn test_clean_old_storages_with_reclaims_unrooted() {
+    let accounts_db = AccountsDb::new_single_for_tests();
+    let pubkey = Pubkey::new_unique();
+    let old_slot = 11;
+    let new_slot = 22;
+    let slots = [old_slot, new_slot];
+    for &slot in &slots {
+        let account = AccountSharedData::new(slot, 0, &Pubkey::new_unique());
+        // store `pubkey` into multiple slots, and also store another unique pubkey
+        // to prevent the whole storage from being marked as dead by `clean`.
+        accounts_db.store_for_tests(
+            slot,
+            &[(&pubkey, &account), (&Pubkey::new_unique(), &account)],
+        );
+        accounts_db.calculate_accounts_delta_hash(slot);
+        // ensure this slot is in uncleaned_pubkeys (but not dirty_stores) so it'll be cleaned
+        assert!(!accounts_db.dirty_stores.contains_key(&slot));
+        assert!(accounts_db.uncleaned_pubkeys.contains_key(&slot));
+    }
+
+    // only `old_slot` should be rooted, not `new_slot`
+    accounts_db.add_root_and_flush_write_cache(old_slot);
+    assert!(accounts_db.accounts_index.is_alive_root(old_slot));
+    assert!(!accounts_db.accounts_index.is_alive_root(new_slot));
+
+    // ensure the slot list for `pubkey` has both the old and new slots
+    let slot_list = accounts_db
+        .accounts_index
+        .get_bin(&pubkey)
+        .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+        .unwrap();
+    assert_eq!(slot_list.len(), slots.len());
+    assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
+
+    // `clean` should *not* reclaim the account in `old_slot` because `new_slot` is not a root
+    accounts_db.clean_accounts_for_tests();
+
+    // ensure we have NOT reclaimed the account in `old_slot`
+    let slot_list = accounts_db
+        .accounts_index
+        .get_bin(&pubkey)
+        .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+        .unwrap();
+    assert_eq!(slot_list.len(), slots.len());
+    assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
 }

@@ -24,6 +24,7 @@ use {
         create_program_runtime_environment_v1, create_program_runtime_environment_v2,
     },
     solana_compute_budget::compute_budget::ComputeBudget,
+    solana_compute_budget_instruction::instructions_processor::process_compute_budget_instructions,
     solana_feature_set::{
         enable_transaction_loading_failure_fees, remove_accounts_executable_flag_checks,
         remove_rounding_in_fee_calculation, FeatureSet,
@@ -36,13 +37,12 @@ use {
             ForkGraph, ProgramCache, ProgramCacheEntry, ProgramCacheForTxBatch,
             ProgramCacheMatchCriteria, ProgramRuntimeEnvironment,
         },
-        solana_rbpf::{
+        solana_sbpf::{
             program::{BuiltinProgram, FunctionRegistry},
             vm::Config as VmConfig,
         },
         sysvar_cache::SysvarCache,
     },
-    solana_runtime_transaction::instructions_processor::process_compute_budget_instructions,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount, PROGRAM_OWNERS},
         account_utils::StateMut,
@@ -569,6 +569,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
     ) -> transaction::Result<ValidatedTransactionDetails> {
         let compute_budget_limits = process_compute_budget_instructions(
             message.program_instructions_iter(),
+            &account_loader.feature_set,
         )
         .inspect_err(|_err| {
             error_counters.invalid_compute_budget += 1;
@@ -1010,10 +1011,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
 
         drop(invoke_context);
 
-        saturating_add_assign!(
-            execute_timings.execute_accessories.process_message_us,
-            process_message_time.as_us()
-        );
+        execute_timings.execute_accessories.process_message_us += process_message_time.as_us();
 
         let mut status = process_result
             .and_then(|info| {
@@ -1075,14 +1073,8 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         let status = status.map(|_| ());
 
         loaded_transaction.accounts = accounts;
-        saturating_add_assign!(
-            execute_timings.details.total_account_count,
-            loaded_transaction.accounts.len() as u64
-        );
-        saturating_add_assign!(
-            execute_timings.details.changed_account_count,
-            touched_account_count
-        );
+        execute_timings.details.total_account_count += loaded_transaction.accounts.len() as u64;
+        execute_timings.details.changed_account_count += touched_account_count;
 
         let return_data = if config.recording_config.enable_return_data_recording
             && !return_data.data.is_empty()
@@ -1195,6 +1187,11 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             .unwrap()
             .assign_program(program_id, Arc::new(builtin));
         debug!("Added program {} under {:?}", name, program_id);
+    }
+
+    #[cfg(feature = "dev-context-only-utils")]
+    pub fn writable_sysvar_cache(&self) -> &RwLock<SysvarCache> {
+        &self.sysvar_cache
     }
 }
 
@@ -1563,7 +1560,7 @@ mod tests {
             &processing_config,
         );
 
-        assert_eq!(error_metrics.instruction_error, 1);
+        assert_eq!(error_metrics.instruction_error.0, 1);
     }
 
     #[test]
@@ -2131,9 +2128,11 @@ mod tests {
             Some(&Pubkey::new_unique()),
             &Hash::new_unique(),
         ));
-        let compute_budget_limits =
-            process_compute_budget_instructions(SVMMessage::program_instructions_iter(&message))
-                .unwrap();
+        let compute_budget_limits = process_compute_budget_instructions(
+            SVMMessage::program_instructions_iter(&message),
+            &FeatureSet::default(),
+        )
+        .unwrap();
         let fee_payer_address = message.fee_payer();
         let current_epoch = 42;
         let rent_collector = RentCollector {
@@ -2217,9 +2216,11 @@ mod tests {
             Some(&Pubkey::new_unique()),
             &Hash::new_unique(),
         ));
-        let compute_budget_limits =
-            process_compute_budget_instructions(SVMMessage::program_instructions_iter(&message))
-                .unwrap();
+        let compute_budget_limits = process_compute_budget_instructions(
+            SVMMessage::program_instructions_iter(&message),
+            &FeatureSet::default(),
+        )
+        .unwrap();
         let fee_payer_address = message.fee_payer();
         let mut rent_collector = RentCollector::default();
         rent_collector.rent.lamports_per_byte_year = 1_000_000;
@@ -2310,7 +2311,7 @@ mod tests {
                 &mut error_counters,
             );
 
-        assert_eq!(error_counters.account_not_found, 1);
+        assert_eq!(error_counters.account_not_found.0, 1);
         assert_eq!(result, Err(TransactionError::AccountNotFound));
     }
 
@@ -2344,7 +2345,7 @@ mod tests {
                 &mut error_counters,
             );
 
-        assert_eq!(error_counters.insufficient_funds, 1);
+        assert_eq!(error_counters.insufficient_funds.0, 1);
         assert_eq!(result, Err(TransactionError::InsufficientFundsForFee));
     }
 
@@ -2418,7 +2419,7 @@ mod tests {
                 &mut error_counters,
             );
 
-        assert_eq!(error_counters.invalid_account_for_fee, 1);
+        assert_eq!(error_counters.invalid_account_for_fee.0, 1);
         assert_eq!(result, Err(TransactionError::InvalidAccountForFee));
     }
 
@@ -2450,7 +2451,7 @@ mod tests {
                 &mut error_counters,
             );
 
-        assert_eq!(error_counters.invalid_compute_budget, 1);
+        assert_eq!(error_counters.invalid_compute_budget.0, 1);
         assert_eq!(result, Err(TransactionError::DuplicateInstruction(1u8)));
     }
 
@@ -2468,9 +2469,11 @@ mod tests {
             Some(&Pubkey::new_unique()),
             &last_blockhash,
         ));
-        let compute_budget_limits =
-            process_compute_budget_instructions(SVMMessage::program_instructions_iter(&message))
-                .unwrap();
+        let compute_budget_limits = process_compute_budget_instructions(
+            SVMMessage::program_instructions_iter(&message),
+            &FeatureSet::default(),
+        )
+        .unwrap();
         let fee_payer_address = message.fee_payer();
         let min_balance = Rent::default().minimum_balance(nonce::State::size());
         let transaction_fee = lamports_per_signature;
@@ -2582,7 +2585,7 @@ mod tests {
                 &mut error_counters,
             );
 
-            assert_eq!(error_counters.insufficient_funds, 1);
+            assert_eq!(error_counters.insufficient_funds.0, 1);
             assert_eq!(result, Err(TransactionError::InsufficientFundsForFee));
         }
     }

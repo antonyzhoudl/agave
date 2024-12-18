@@ -10,19 +10,14 @@
 //!    ALT, RuntimeTransaction<SanitizedMessage> transits into Dynamically Loaded state,
 //!    with its dynamic metadata loaded.
 use {
-    crate::{
-        compute_budget_instruction_details::*,
-        transaction_meta::{DynamicMeta, StaticMeta, TransactionMeta},
-    },
+    crate::transaction_meta::{DynamicMeta, StaticMeta, TransactionMeta},
     core::ops::Deref,
-    solana_compute_budget::compute_budget_limits::ComputeBudgetLimits,
+    solana_compute_budget_instruction::compute_budget_instruction_details::*,
     solana_sdk::{
-        feature_set::FeatureSet,
         hash::Hash,
         message::{AccountKeys, TransactionSignatureDetails},
         pubkey::Pubkey,
         signature::Signature,
-        transaction::Result,
     },
     solana_svm_transaction::{
         instruction::SVMInstruction, message_address_table_lookup::SVMMessageAddressTableLookup,
@@ -52,10 +47,8 @@ impl<T> StaticMeta for RuntimeTransaction<T> {
     fn signature_details(&self) -> &TransactionSignatureDetails {
         &self.meta.signature_details
     }
-    fn compute_budget_limits(&self, _feature_set: &FeatureSet) -> Result<ComputeBudgetLimits> {
-        self.meta
-            .compute_budget_instruction_details
-            .sanitize_and_convert_to_compute_budget_limits()
+    fn compute_budget_instruction_details(&self) -> &ComputeBudgetInstructionDetails {
+        &self.meta.compute_budget_instruction_details
     }
 }
 
@@ -91,7 +84,7 @@ impl<T: SVMMessage> SVMMessage for RuntimeTransaction<T> {
         self.transaction.instructions_iter()
     }
 
-    fn program_instructions_iter(&self) -> impl Iterator<Item = (&Pubkey, SVMInstruction)> {
+    fn program_instructions_iter(&self) -> impl Iterator<Item = (&Pubkey, SVMInstruction)> + Clone {
         self.transaction.program_instructions_iter()
     }
 

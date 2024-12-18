@@ -20,12 +20,12 @@
 #![cfg_attr(feature = "frozen-abi", feature(min_specialization))]
 
 use {
+    ahash::{AHashMap, AHashSet},
     lazy_static::lazy_static,
     solana_epoch_schedule::EpochSchedule,
     solana_hash::Hash,
     solana_pubkey::Pubkey,
     solana_sha256_hasher::Hasher,
-    std::collections::{HashMap, HashSet},
 };
 
 pub mod deprecate_rewards_sysvar {
@@ -617,7 +617,7 @@ pub mod apply_cost_tracker_during_replay {
     solana_pubkey::declare_id!("2ry7ygxiYURULZCrypHhveanvP5tzZ4toRwVp89oCNSj");
 }
 pub mod bpf_account_data_direct_mapping {
-    solana_pubkey::declare_id!("EenyoWx9UMXYKpR8mW5Jmfmy2fRjzUtM7NduYMY8bx33");
+    solana_pubkey::declare_id!("GJVDwRkUPNdk9QaK4VsU4g1N41QNxhy1hevjf8kz45Mq");
 }
 
 pub mod add_set_tx_loaded_accounts_data_size_instruction {
@@ -860,12 +860,24 @@ pub mod deprecate_legacy_vote_ixs {
     solana_pubkey::declare_id!("depVvnQ2UysGrhwdiwU42tCadZL8GcBb1i2GYhMopQv");
 }
 
-pub mod disable_sbpf_v1_execution {
+pub mod disable_sbpf_v0_execution {
     solana_pubkey::declare_id!("TestFeature11111111111111111111111111111111");
 }
 
-pub mod reenable_sbpf_v1_execution {
+pub mod reenable_sbpf_v0_execution {
     solana_pubkey::declare_id!("TestFeature21111111111111111111111111111111");
+}
+
+pub mod enable_sbpf_v1_deployment_and_execution {
+    solana_pubkey::declare_id!("JE86WkYvTrzW8HgNmrHY7dFYpCmSptUpKupbo2AdQ9cG");
+}
+
+pub mod enable_sbpf_v2_deployment_and_execution {
+    solana_pubkey::declare_id!("F6UVKh1ujTEFK3en2SyAL3cdVnqko1FVEXWhmdLRu6WP");
+}
+
+pub mod enable_sbpf_v3_deployment_and_execution {
+    solana_pubkey::declare_id!("C8XZNs1bfzaiT3YDeXZJ7G5swQWQv7tVzDnCxtHvnSpw");
 }
 
 pub mod remove_accounts_executable_flag_checks {
@@ -892,9 +904,21 @@ pub mod migrate_stake_program_to_core_bpf {
     solana_pubkey::declare_id!("6M4oQ6eXneVhtLoiAr4yRYQY43eVLjrKbiDZDJc892yk");
 }
 
+pub mod deplete_cu_meter_on_vm_failure {
+    solana_pubkey::declare_id!("B7H2caeia4ZFcpE3QcgMqbiWiBtWrdBRBSJ1DY6Ktxbq");
+}
+
+pub mod reserve_minimal_cus_for_builtin_instructions {
+    solana_pubkey::declare_id!("C9oAhLxDBm3ssWtJx1yBGzPY55r2rArHmN1pbQn6HogH");
+}
+
+pub mod raise_block_limits_to_50m {
+    solana_pubkey::declare_id!("5oMCU3JPaFLr8Zr4ct7yFA7jdk6Mw1RmB8K4u9ZbS42z");
+}
+
 lazy_static! {
     /// Map of feature identifiers to user-visible description
-    pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
+    pub static ref FEATURE_NAMES: AHashMap<Pubkey, &'static str> = [
         (secp256k1_program_enabled::id(), "secp256k1 program"),
         (deprecate_rewards_sysvar::id(), "deprecate unused rewards sysvar"),
         (pico_inflation::id(), "pico inflation"),
@@ -1102,14 +1126,20 @@ lazy_static! {
         (enable_turbine_extended_fanout_experiments::id(), "enable turbine extended fanout experiments #"),
         (deprecate_legacy_vote_ixs::id(), "Deprecate legacy vote instructions"),
         (partitioned_epoch_rewards_superfeature::id(), "replaces enable_partitioned_epoch_reward to enable partitioned rewards at epoch boundary SIMD-0118"),
-        (disable_sbpf_v1_execution::id(), "Disables execution of SBPFv1 programs"),
-        (reenable_sbpf_v1_execution::id(), "Re-enables execution of SBPFv1 programs"),
+        (disable_sbpf_v0_execution::id(), "Disables execution of SBPFv1 programs SIMD-0161"),
+        (reenable_sbpf_v0_execution::id(), "Re-enables execution of SBPFv1 programs"),
+        (enable_sbpf_v1_deployment_and_execution::id(), "Enables deployment and execution of SBPFv1 programs SIMD-0161"),
+        (enable_sbpf_v2_deployment_and_execution::id(), "Enables deployment and execution of SBPFv2 programs SIMD-0161"),
+        (enable_sbpf_v3_deployment_and_execution::id(), "Enables deployment and execution of SBPFv3 programs SIMD-0161"),
         (remove_accounts_executable_flag_checks::id(), "Remove checks of accounts is_executable flag SIMD-0162"),
         (lift_cpi_caller_restriction::id(), "Lift the restriction in CPI that the caller must have the callee as an instruction account #2202"),
         (disable_account_loader_special_case::id(), "Disable account loader special case #3513"),
         (accounts_lt_hash::id(), "enables lattice-based accounts hash #3333"),
         (enable_secp256r1_precompile::id(), "Enable secp256r1 precompile SIMD-0075"),
         (migrate_stake_program_to_core_bpf::id(), "Migrate Stake program to Core BPF SIMD-0196 #3655"),
+        (deplete_cu_meter_on_vm_failure::id(), "Deplete compute meter for vm errors SIMD-0182 #3993"),
+        (reserve_minimal_cus_for_builtin_instructions::id(), "Reserve minimal CUs for builtin instructions SIMD-170 #2562"),
+        (raise_block_limits_to_50m::id(), "Raise block limit to 50M SIMD-0207"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
@@ -1136,7 +1166,7 @@ pub struct FullInflationFeaturePair {
 
 lazy_static! {
     /// Set of feature pairs that once enabled will trigger full inflation
-    pub static ref FULL_INFLATION_FEATURE_PAIRS: HashSet<FullInflationFeaturePair> = [
+    pub static ref FULL_INFLATION_FEATURE_PAIRS: AHashSet<FullInflationFeaturePair> = [
         FullInflationFeaturePair {
             vote_id: full_inflation::mainnet::certusone::vote::id(),
             enable_id: full_inflation::mainnet::certusone::enable::id(),
@@ -1151,14 +1181,14 @@ lazy_static! {
 #[cfg_attr(feature = "frozen-abi", derive(solana_frozen_abi_macro::AbiExample))]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FeatureSet {
-    pub active: HashMap<Pubkey, u64>,
-    pub inactive: HashSet<Pubkey>,
+    pub active: AHashMap<Pubkey, u64>,
+    pub inactive: AHashSet<Pubkey>,
 }
 impl Default for FeatureSet {
     fn default() -> Self {
         // All features disabled
         Self {
-            active: HashMap::new(),
+            active: AHashMap::new(),
             inactive: FEATURE_NAMES.keys().cloned().collect(),
         }
     }
@@ -1173,7 +1203,7 @@ impl FeatureSet {
     }
 
     /// List of enabled features that trigger full inflation
-    pub fn full_inflation_features_enabled(&self) -> HashSet<Pubkey> {
+    pub fn full_inflation_features_enabled(&self) -> AHashSet<Pubkey> {
         let mut hash_set = FULL_INFLATION_FEATURE_PAIRS
             .iter()
             .filter_map(|pair| {
@@ -1183,7 +1213,7 @@ impl FeatureSet {
                     None
                 }
             })
-            .collect::<HashSet<_>>();
+            .collect::<AHashSet<_>>();
 
         if self.is_active(&full_inflation::devnet_and_testnet::id()) {
             hash_set.insert(full_inflation::devnet_and_testnet::id());
@@ -1195,7 +1225,7 @@ impl FeatureSet {
     pub fn all_enabled() -> Self {
         Self {
             active: FEATURE_NAMES.keys().cloned().map(|key| (key, 0)).collect(),
-            inactive: HashSet::new(),
+            inactive: AHashSet::new(),
         }
     }
 

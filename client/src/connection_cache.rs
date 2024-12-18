@@ -8,12 +8,12 @@ use {
             NewConnectionConfig,
         },
     },
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
     solana_quic_client::{QuicConfig, QuicConnectionManager, QuicPool},
-    solana_sdk::{
-        pubkey::Pubkey, quic::NotifyKeyUpdate, signature::Keypair,
-        transport::Result as TransportResult,
-    },
+    solana_quic_definitions::NotifyKeyUpdate,
     solana_streamer::streamer::StakedNodes,
+    solana_transaction_error::TransportResult,
     solana_udp_client::{UdpConfig, UdpConnectionManager, UdpPool},
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -201,7 +201,8 @@ mod tests {
         super::*,
         crate::connection_cache::ConnectionCache,
         crossbeam_channel::unbounded,
-        solana_sdk::signature::Keypair,
+        solana_keypair::Keypair,
+        solana_net_utils::bind_to_localhost,
         solana_streamer::{
             quic::{QuicServerParams, SpawnServerResult},
             streamer::StakedNodes,
@@ -217,7 +218,7 @@ mod tests {
 
     fn server_args() -> (UdpSocket, Arc<AtomicBool>, Keypair) {
         (
-            UdpSocket::bind("127.0.0.1:0").unwrap(),
+            bind_to_localhost().unwrap(),
             Arc::new(AtomicBool::new(false)),
             Keypair::new(),
         )
