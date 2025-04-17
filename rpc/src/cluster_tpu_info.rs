@@ -19,14 +19,20 @@ pub struct ClusterTpuInfo {
     cluster_info: Arc<ClusterInfo>,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     recent_peers: HashMap<Pubkey, (SocketAddr, SocketAddr)>, // values are socket address for UDP and QUIC protocols
+    validator_whitelist: Arc<RwLock<Vec<String>>>,
 }
 
 impl ClusterTpuInfo {
-    pub fn new(cluster_info: Arc<ClusterInfo>, poh_recorder: Arc<RwLock<PohRecorder>>) -> Self {
+    pub fn new(
+        cluster_info: Arc<ClusterInfo>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        validator_whitelist: Arc<RwLock<Vec<String>>>,
+    ) -> Self {
         Self {
             cluster_info,
             poh_recorder,
             recent_peers: HashMap::new(),
+            validator_whitelist,
         }
     }
 }
@@ -49,9 +55,28 @@ impl TpuInfo for ClusterTpuInfo {
 
     fn get_leader_tpus(&self, max_count: u64, protocol: Protocol) -> Vec<&SocketAddr> {
         let recorder = self.poh_recorder.read().unwrap();
-        let leaders: Vec<_> = (0..max_count)
-            .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
-            .collect();
+        let whitelist = self.validator_whitelist.read().unwrap();
+        let leaders: Vec<_> = if whitelist.is_empty() {
+            (0..max_count)
+                .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
+                .collect()
+        } else {
+            // filter validator whitelist
+            (0..max_count)
+                .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
+                .filter(|leader_id| {
+                    if !whitelist.contains(&leader_id.to_string()) {
+                        info!(
+                            "This validator is not in the whitelist: {}",
+                            leader_id.to_string()
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect()
+        };
         drop(recorder);
         let mut unique_leaders = vec![];
         for leader in leaders.iter() {
@@ -69,9 +94,28 @@ impl TpuInfo for ClusterTpuInfo {
 
     fn get_not_unique_leader_tpus(&self, max_count: u64, protocol: Protocol) -> Vec<&SocketAddr> {
         let recorder = self.poh_recorder.read().unwrap();
-        let leader_pubkeys: Vec<_> = (0..max_count)
-            .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
-            .collect();
+        let whitelist = self.validator_whitelist.read().unwrap();
+        let leader_pubkeys: Vec<_> = if whitelist.is_empty() {
+            (0..max_count)
+                .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
+                .collect()
+        } else {
+            // filter validator whitelist
+            (0..max_count)
+                .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
+                .filter(|leader_id| {
+                    if !whitelist.contains(&leader_id.to_string()) {
+                        info!(
+                            "This validator is not in the whitelist: {}",
+                            leader_id.to_string()
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect()
+        };
         drop(recorder);
         leader_pubkeys
             .iter()
@@ -203,8 +247,11 @@ mod test {
         cluster_info.insert_info(validator1_contact_info);
         cluster_info.insert_info(validator2_contact_info);
 
-        let mut leader_info =
-            ClusterTpuInfo::new(cluster_info, Arc::new(RwLock::new(poh_recorder)));
+        let mut leader_info = ClusterTpuInfo::new(
+            cluster_info,
+            Arc::new(RwLock::new(poh_recorder)),
+            Arc::new(RwLock::new(Vec::new())),
+        );
         leader_info.refresh_recent_peers();
         let mut refreshed_recent_peers =
             leader_info.recent_peers.keys().copied().collect::<Vec<_>>();
@@ -285,6 +332,7 @@ mod test {
             cluster_info,
             poh_recorder: Arc::new(RwLock::new(poh_recorder)),
             recent_peers: recent_peers.clone(),
+            validator_whitelist: Arc::new(RwLock::new(Vec::new())),
         };
 
         let slot = bank.slot();

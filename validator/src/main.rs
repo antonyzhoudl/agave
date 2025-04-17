@@ -60,6 +60,9 @@ pub fn main() {
         ("staked-nodes-overrides", Some(subcommand_matches)) => {
             commands::staked_nodes_overrides::execute(subcommand_matches, &ledger_path)
         }
+        ("validator-whitelist", Some(subcommand_matches)) => {
+            commands::validator_whitelist::execute(subcommand_matches, &ledger_path)
+        }
         ("set-identity", Some(subcommand_matches)) => {
             commands::set_identity::execute(subcommand_matches, &ledger_path)
         }

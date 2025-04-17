@@ -405,6 +405,7 @@ fn main() {
             validator_exit: genesis.validator_exit.clone(),
             authorized_voter_keypairs: genesis.authorized_voter_keypairs.clone(),
             staked_nodes_overrides: genesis.staked_nodes_overrides.clone(),
+            validator_whitelist: genesis.validator_whitelist.clone(),
             post_init: admin_service_post_init,
             tower_storage: tower_storage.clone(),
             rpc_to_plugin_manager_sender,

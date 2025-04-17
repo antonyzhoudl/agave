@@ -1,6 +1,8 @@
 use {
     crate::{
-        admin_rpc_service::{self, load_staked_nodes_overrides, StakedNodesOverrides},
+        admin_rpc_service::{
+            self, load_staked_nodes_overrides, load_validator_whitelist, StakedNodesOverrides,
+        },
         bootstrap,
         cli::{self},
         ledger_lockfile, lock_ledger,
@@ -168,6 +170,23 @@ pub fn execute(
         }
         .staked_map_id,
     ));
+
+    let validator_whitelist_path = matches.value_of("validator_whitelist").map(str::to_string);
+    let validator_whitelist = Arc::new(RwLock::new(match &validator_whitelist_path {
+        None => Vec::default(),
+        Some(p) => load_validator_whitelist(p).unwrap_or_else(|err| {
+            error!("Failed to load validator-whitelist from {}: {}", p, err);
+            clap::Error::with_description(
+                "Failed to load configuration of validator-whitelist argument",
+                clap::ErrorKind::InvalidValue,
+            )
+            .exit()
+        }),
+    }));
+    info!(
+        "Validator whitelist config: {:?}",
+        validator_whitelist.read().unwrap()
+    );
 
     let init_complete_file = matches.value_of("init_complete_file");
 
@@ -737,6 +756,7 @@ pub fn execute(
                 usize
             ),
             tpu_peers: rpc_send_transaction_tpu_peers,
+            validator_whitelist: validator_whitelist.clone(),
         },
         no_poh_speed_test: matches.is_present("no_poh_speed_test"),
         no_os_memory_stats_reporting: matches.is_present("no_os_memory_stats_reporting"),
@@ -1080,6 +1100,7 @@ pub fn execute(
             post_init: admin_service_post_init.clone(),
             tower_storage: validator_config.tower_storage.clone(),
             staked_nodes_overrides,
+            validator_whitelist,
             rpc_to_plugin_manager_sender,
         },
     );

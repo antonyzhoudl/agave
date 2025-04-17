@@ -419,9 +419,16 @@ impl JsonRpcService {
             config.rpc_config.rpc_blocking_threads,
             config.rpc_config.rpc_niceness_adj,
         );
-        let leader_info = config
-            .poh_recorder
-            .map(|recorder| ClusterTpuInfo::new(config.cluster_info.clone(), recorder));
+        let leader_info = config.poh_recorder.map(|recorder| {
+            ClusterTpuInfo::new(
+                config.cluster_info.clone(),
+                recorder,
+                config
+                    .send_transaction_service_config
+                    .validator_whitelist
+                    .clone(),
+            )
+        });
 
         match config.client_option {
             ClientOption::ConnectionCache(connection_cache) => {
@@ -554,8 +561,13 @@ impl JsonRpcService {
                 )
             })?;
 
-        let leader_info =
-            poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
+        let leader_info = poh_recorder.map(|recorder| {
+            ClusterTpuInfo::new(
+                cluster_info.clone(),
+                recorder,
+                send_transaction_service_config.validator_whitelist.clone(),
+            )
+        });
         let client = ConnectionCacheClient::new(
             connection_cache,
             tpu_address,

@@ -46,6 +46,7 @@ pub struct AdminRpcRequestMetadata {
     pub authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
     pub tower_storage: Arc<dyn TowerStorage>,
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
+    pub validator_whitelist: Arc<RwLock<Vec<String>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
 }
@@ -208,6 +209,9 @@ pub trait AdminRpc {
 
     #[rpc(meta, name = "setStakedNodesOverrides")]
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()>;
+
+    #[rpc(meta, name = "setValidatorWhitelist")]
+    fn set_validator_whitelist(&self, meta: Self::Metadata, path: String) -> Result<()>;
 
     #[rpc(meta, name = "contactInfo")]
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo>;
@@ -499,6 +503,19 @@ impl AdminRpc for AdminRpcImpl {
         write_staked_nodes.extend(loaded_config);
         info!("Staked nodes overrides loaded from {}", path);
         debug!("overrides map: {:?}", write_staked_nodes);
+        Ok(())
+    }
+
+    fn set_validator_whitelist(&self, meta: Self::Metadata, path: String) -> Result<()> {
+        let loaded_config = load_validator_whitelist(&path).map_err(|err| {
+            error!("Failed to load validator whitelist from {}: {}", &path, err);
+            jsonrpc_core::error::Error::internal_error()
+        })?;
+        let mut write_validator_whitelist = meta.validator_whitelist.write().unwrap();
+        write_validator_whitelist.clear();
+        write_validator_whitelist.extend(loaded_config);
+        info!("Validator whitelist loaded from {}", path);
+        info!("validator whitelist: {:?}", write_validator_whitelist);
         Ok(())
     }
 
@@ -864,6 +881,18 @@ pub fn load_staked_nodes_overrides(
     }
 }
 
+pub fn load_validator_whitelist(
+    path: &String,
+) -> std::result::Result<Vec<String>, Box<dyn error::Error>> {
+    debug!("Loading validator whitelist configuration from {}", path);
+    if Path::new(&path).exists() {
+        let file = std::fs::File::open(path)?;
+        Ok(serde_json::from_reader(file)?)
+    } else {
+        Err(format!("Validator whitelist provided '{path}' a non-existing file path.").into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -964,6 +993,7 @@ mod tests {
                     ),
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
+                validator_whitelist: Arc::new(RwLock::new(Vec::new())),
                 rpc_to_plugin_manager_sender: None,
             };
             let mut io = MetaIoHandler::default();
@@ -1383,6 +1413,7 @@ mod tests {
                 tower_storage: Arc::new(NullTowerStorage {}),
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
+                validator_whitelist: Arc::new(RwLock::new(Vec::new())),
                 rpc_to_plugin_manager_sender: None,
             };
 

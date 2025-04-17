@@ -897,6 +897,15 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("validator_whitelist")
+            .long("validator-whitelist")
+            .value_name("PATH")
+            .takes_value(true)
+            .help(
+                "Provide a path to a json file containing a list of trusted validator",
+            ),
+    )
+    .arg(
         Arg::with_name("bind_address")
             .long("bind-address")
             .value_name("HOST")
